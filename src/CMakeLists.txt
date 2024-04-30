@@ -8,6 +8,7 @@ pico_enable_stdio_semihosting(main 0)
 
 target_link_libraries(main
 	pico_stdlib
+	hardware_pwm
 )
 
 pico_add_extra_outputs(main)
