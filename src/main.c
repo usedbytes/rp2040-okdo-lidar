@@ -1,8 +1,10 @@
 #include <stdio.h>
+#include <string.h>
 
 #include "pico/stdlib.h"
-#include "hardware/pwm.h"
 #include "hardware/clocks.h"
+#include "hardware/dma.h"
+#include "hardware/pwm.h"
 
 #define PWM_PIN 2
 #define RX_PIN 5
@@ -90,6 +92,148 @@ uint8_t CalCRC8(uint8_t *p, uint8_t len){
 
 // End thirdparty
 
+bool frame_valid(LiDARFrameTypeDef *frame)
+{
+	uint8_t crc = CalCRC8((uint8_t *)frame, sizeof(*frame) - 1);
+
+	return crc == frame->crc8;
+}
+
+#define FRAME_SIZE sizeof(LiDARFrameTypeDef)
+
+struct uart_buf {
+#define UART_BUF_BITS 9
+#define UART_BUF_SIZE (1 << UART_BUF_BITS)
+	uint64_t insert;
+	uint64_t extract;
+	int dma_chan;
+	dma_channel_config dma_cfg;
+	uint32_t last_nbytes;
+	uint8_t *dma_read_addr;
+	uint8_t __attribute__((aligned(UART_BUF_SIZE))) buf[UART_BUF_SIZE];
+};
+
+struct uart_buf uart_buf;
+
+void uart_buf_request_bytes(struct uart_buf *buf, uint32_t nbytes)
+{
+	uint8_t *dst = &buf->buf[buf->insert % UART_BUF_SIZE];
+	buf->last_nbytes = nbytes;
+	dma_channel_configure(buf->dma_chan, &buf->dma_cfg,
+	                      dst, buf->dma_read_addr,
+	                      nbytes, true);
+}
+
+static inline uint32_t min_u32(uint32_t a, uint32_t b)
+{
+	return a < b ? a : b;
+}
+
+void ring_buffer_memcpy(uint8_t *dst, uint8_t *src_base,
+                        uint32_t start_offs, uint32_t buf_size,
+                        uint32_t size)
+{
+	uint32_t space = buf_size - start_offs;
+	if (space >= size) {
+		memcpy(dst, &src_base[start_offs], size);
+	} else {
+		memcpy(dst, &src_base[start_offs], space);
+		memcpy(dst + space, &src_base[0], size - space);
+	}
+}
+
+uint32_t uart_buf_scan(struct uart_buf *buf)
+{
+	for (;;) {
+		// Each iteration looks for packets until:
+		//  - Buffer wrap
+		//  - All data consumed
+
+		uint32_t start_offset = buf->extract % UART_BUF_SIZE;
+		uint32_t available = buf->insert - buf->extract;
+
+		if (available < FRAME_SIZE) {
+			// We need more data
+			// TODO: Don't always request a full packet, track the last SoP
+			return FRAME_SIZE;
+		}
+
+		// Possible start-of-complete-packets up to wrap point
+		uint32_t count = min_u32(available - (FRAME_SIZE - 1),
+		                         UART_BUF_SIZE - start_offset);
+
+		uint32_t consumed = 0;
+		uint8_t *p = &buf->buf[start_offset];
+		uint8_t *end = p + count;
+		while (p < end) {
+			uint32_t this_consumed = 1;
+			if (*p == HEADER) {
+				LiDARFrameTypeDef frame;
+
+				ring_buffer_memcpy((uint8_t *)&frame, buf->buf, p - buf->buf,
+						   UART_BUF_SIZE, sizeof(frame));
+
+				if (frame_valid(&frame)) {
+					// send_frame();
+					this_consumed = sizeof(frame);
+					printf("%p -> FOUND PACKET (%d) crc: %02x\n", p, frame.timestamp, frame.crc8);
+				}
+			}
+
+			p += this_consumed;
+			consumed += this_consumed;
+		}
+
+		buf->extract += consumed;
+	}
+}
+
+void dma_irq_handler()
+{
+	struct uart_buf *buf = &uart_buf;
+
+	buf->insert += buf->last_nbytes;
+
+	uint32_t next_req = uart_buf_scan(buf);
+
+	// Clear the interrupt request, *before* requesting more
+	dma_hw->ints0 = 1u << buf->dma_chan;
+
+	uart_buf_request_bytes(buf, next_req);
+}
+
+void uart_buf_init(uart_inst_t *uart, struct uart_buf *buf)
+{
+	memset(buf, 0, sizeof(*buf));
+	uart_set_fifo_enabled(uart, true);
+
+	uart_hw_t *uart_hw = uart_get_hw(uart);
+	uint dreq = uart_get_dreq(uart, false);
+
+	// Set FIFO watermark to 50% (16)
+	uart_hw->ifls = (2 << UART_UARTIFLS_RXIFLSEL_LSB);
+
+	// Set up DMA to transfer from UART to ring-buffer
+	buf->dma_chan = dma_claim_unused_channel(true);
+	buf->dma_cfg = dma_channel_get_default_config(buf->dma_chan);
+	buf->dma_read_addr = (uint8_t *)&uart_hw->dr;
+
+	channel_config_set_read_increment(&buf->dma_cfg, false);
+	channel_config_set_write_increment(&buf->dma_cfg, true);
+	channel_config_set_dreq(&buf->dma_cfg, dreq);
+	channel_config_set_transfer_data_size(&buf->dma_cfg, DMA_SIZE_8);
+	channel_config_set_ring(&buf->dma_cfg, true, UART_BUF_BITS);
+	channel_config_set_enable(&buf->dma_cfg, true);
+
+	dma_channel_set_irq0_enabled(buf->dma_chan, true);
+	irq_set_exclusive_handler(DMA_IRQ_0, dma_irq_handler);
+	irq_set_enabled(DMA_IRQ_0, true);
+
+	// Initially request a full packet, and we will adjust when we
+	// see the first header.
+	uart_buf_request_bytes(buf, FRAME_SIZE);
+}
+
 void main(void) {
 	stdio_init_all();
 	int i = 0;
@@ -122,31 +266,14 @@ void main(void) {
 	gpio_set_function(RX_PIN, GPIO_FUNC_UART);
 
 	uint baud = uart_set_baudrate(UART_ID, BAUD_RATE);
-	printf("Baud rate: %d", baud);
+	printf("Baud rate: %d\n", baud);
+
+	uart_buf_init(UART_ID, &uart_buf);
 
 	for ( ;; ) {
 		gpio_put(PICO_DEFAULT_LED_PIN, 1);
-
-		char c = 0;
-		LiDARFrameTypeDef frame;
-		while (c != HEADER) {
-			uart_read_blocking(UART_ID, &c, 1);
-		}
-
-		frame.header = c;
-		uart_read_blocking(UART_ID, &frame.ver_len, sizeof(frame) - 1);
-
+		sleep_ms(300);
 		gpio_put(PICO_DEFAULT_LED_PIN, 0);
-
-		uint8_t crc = CalCRC8((uint8_t *)&frame, sizeof(frame) - 1);
-
-		if (crc != frame.crc8) {
-			printf("CRC fail, %2x != %2x\n", frame.crc8, crc);
-			continue;
-		} else {
-			//printf(".");
-			dump_frame(&frame);
-		}
-
+		sleep_ms(300);
 	}
 }
