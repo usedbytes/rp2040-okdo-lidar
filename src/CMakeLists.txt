@@ -1,6 +1,7 @@
 
 add_executable(main
 	main.c
+	lidar.c
 )
 
 target_compile_definitions(main PRIVATE
@@ -14,6 +15,7 @@ target_link_libraries(main
 	hardware_dma
 	hardware_pwm
 	pico_stdlib
+	pico_util
 )
 
 pico_add_extra_outputs(main)
