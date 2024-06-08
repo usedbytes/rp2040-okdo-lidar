@@ -102,7 +102,7 @@ bool frame_valid(LiDARFrameTypeDef *frame)
 #define FRAME_SIZE sizeof(LiDARFrameTypeDef)
 
 struct uart_buf {
-#define UART_BUF_BITS 9
+#define UART_BUF_BITS 7
 #define UART_BUF_SIZE (1 << UART_BUF_BITS)
 	uint64_t insert;
 	uint64_t extract;
