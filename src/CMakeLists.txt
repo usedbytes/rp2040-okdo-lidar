@@ -3,6 +3,10 @@ add_executable(main
 	main.c
 )
 
+target_compile_definitions(main PRIVATE
+	PICO_DEFAULT_UART_BAUD_RATE=230400
+)
+
 pico_enable_stdio_uart(main 1)
 pico_enable_stdio_semihosting(main 0)
 

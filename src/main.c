@@ -142,46 +142,56 @@ void ring_buffer_memcpy(uint8_t *dst, uint8_t *src_base,
 	}
 }
 
+void handle_frame(LiDARFrameTypeDef *frame)
+{
+	printf("%p -> (%d) crc: %02x\n", frame, frame->timestamp, frame->crc8);
+}
+
 uint32_t uart_buf_scan(struct uart_buf *buf)
 {
 	for (;;) {
-		// Each iteration looks for packets until:
-		//  - Buffer wrap
-		//  - All data consumed
+		const uint32_t start_offset = buf->extract % UART_BUF_SIZE;
+		const uint32_t available = buf->insert - buf->extract;
+		const uint32_t before_wrap = min_u32(available, UART_BUF_SIZE - start_offset);
 
-		uint32_t start_offset = buf->extract % UART_BUF_SIZE;
-		uint32_t available = buf->insert - buf->extract;
-
-		if (available < FRAME_SIZE) {
-			// We need more data
-			// TODO: Don't always request a full packet, track the last SoP
+		if (available == 0) {
 			return FRAME_SIZE;
 		}
 
-		// Possible start-of-complete-packets up to wrap point
-		uint32_t count = min_u32(available - (FRAME_SIZE - 1),
-		                         UART_BUF_SIZE - start_offset);
-
-		uint32_t consumed = 0;
 		uint8_t *p = &buf->buf[start_offset];
-		uint8_t *end = p + count;
+		const uint8_t *end = p + before_wrap;
+		uint32_t consumed = 0;
+
 		while (p < end) {
-			uint32_t this_consumed = 1;
-			if (*p == HEADER) {
-				LiDARFrameTypeDef frame;
-
-				ring_buffer_memcpy((uint8_t *)&frame, buf->buf, p - buf->buf,
-						   UART_BUF_SIZE, sizeof(frame));
-
-				if (frame_valid(&frame)) {
-					// send_frame();
-					this_consumed = sizeof(frame);
-					printf("%p -> FOUND PACKET (%d) crc: %02x\n", p, frame.timestamp, frame.crc8);
-				}
+			if (*p != HEADER) {
+				// Not a header, just advance
+				p++;
+				consumed += 1;
+				continue;
 			}
 
-			p += this_consumed;
-			consumed += this_consumed;
+			uint32_t remainder = available - consumed;
+			if (remainder < FRAME_SIZE) {
+				// Not enough data to copy a full packet
+				// Request more.
+				buf->extract += consumed;
+				return FRAME_SIZE - remainder;
+			}
+
+			// Full packet available
+			LiDARFrameTypeDef frame;
+
+			ring_buffer_memcpy((uint8_t *)&frame, buf->buf, p - buf->buf,
+					   UART_BUF_SIZE, sizeof(frame));
+
+			if (frame_valid(&frame)) {
+				handle_frame(&frame);
+				p += sizeof(frame);
+				consumed += sizeof(frame);
+			} else {
+				p += 1;
+				consumed += 1;
+			}
 		}
 
 		buf->extract += consumed;
