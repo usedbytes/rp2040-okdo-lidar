@@ -22,6 +22,8 @@ ep_in = usb.util.find_descriptor(intf,
 
 assert (ep_in is not None)
 
-while True:
-    time.sleep(1)
-    print(ep_in.read(6))
+try:
+    while True:
+        print(ep_in.read(57))
+finally:
+    usb.util.dispose_resources(dev)

@@ -27,11 +27,11 @@ void main(void) {
 		if (queue_try_remove(&frame_queue, &frame)) {
 			gpio_put(PICO_DEFAULT_LED_PIN, 1);
 			//printf("Frame: %d\n", frame.timestamp);
+			usb_handle_frame(&frame);
 
 			if (i % 320 == 0) {
 				printf("Speed: %d\n", frame.speed);
 				printf("Angle: %.3f\n", (frame.end_angle - frame.start_angle) * 0.01);
-				send_in();
 			}
 			i++;
 		}

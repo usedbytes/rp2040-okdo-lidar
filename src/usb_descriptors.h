@@ -72,9 +72,9 @@ struct lidar_config_descriptor lidar_config_descriptor = {
 		.bLength =		sizeof(tusb_desc_endpoint_t),
 		.bDescriptorType =	TUSB_DESC_ENDPOINT,
 		.bEndpointAddress =	1 | TUSB_DIR_IN_MASK,
-		.bmAttributes =		TUSB_XFER_BULK,
-		.wMaxPacketSize =	64,
-		.bInterval =		0,
+		.bmAttributes =		TUSB_XFER_INTERRUPT,
+		.wMaxPacketSize =	57,
+		.bInterval =		2,
 	},
 	.reset_interface = {
 		.bLength = sizeof(tusb_desc_interface_t),

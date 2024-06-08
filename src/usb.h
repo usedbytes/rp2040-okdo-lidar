@@ -2,6 +2,7 @@
 #define __LIDAR_USB_H__
 
 void usb_init();
-void send_in();
+
+void usb_handle_frame(LiDARFrameTypeDef *frame);
 
 #endif /* __LIDAR_USB_H__ */
