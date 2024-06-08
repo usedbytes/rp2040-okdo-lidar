@@ -1,5 +1,7 @@
 #include <string.h>
 
+#include "pico/unique_id.h"
+
 #include "tusb.h"
 #include "device/usbd_pvt.h"
 
@@ -42,28 +44,52 @@ uint8_t const *tud_descriptor_configuration_cb(uint8_t index)
 
 uint16_t const* tud_descriptor_string_cb(uint8_t index, uint16_t langid)
 {
+#define STRING_HEADER(_str_len) ((TUSB_DESC_STRING << 8) | ((_str_len * 2) + 2))
+#define STRING_MAX_LEN 16
+
 	(void) langid;
 
-	static uint8_t __attribute__((aligned(2)))buf[64] = { 0 };
-	tusb_desc_string_t *desc = (tusb_desc_string_t *)&buf;
+	// tusb_desc_string_t is packed, so we can't return it as uint16_t *
+	// without a warning. So, build it manually.
 
-	desc->bDescriptorType = TUSB_DESC_STRING;
-	desc->bLength = 0;
+	static uint16_t buf[STRING_MAX_LEN + 1] = { 0 };
+
+	buf[0] = STRING_HEADER(0);
 
 	if (index == 0) {
-		desc->bLength = 4;
-		desc->unicode_string[0] = 0x409;
+		buf[0] = STRING_HEADER(2);
+		buf[1] = 0x409;
 	} else if (index < (sizeof(lidar_strings) / sizeof(lidar_strings[0]))) {
-		char *str = lidar_strings[index - 1];
-		int len = strlen(str);
+		const char *str = lidar_strings[index - 1];
 
-		desc->bLength = 2 + len * 2;
-		for (int i = 0; i < len; i++) {
-			desc->unicode_string[i] = str[i];
+		if (!strcmp(str, "SERIALNO")) {
+			char id_str[(PICO_UNIQUE_BOARD_ID_SIZE_BYTES * 2) + 1];
+			pico_get_unique_board_id_string(id_str, sizeof(id_str));
+
+			int len = PICO_UNIQUE_BOARD_ID_SIZE_BYTES * 2;
+			if (len > STRING_MAX_LEN) {
+				len = STRING_MAX_LEN;
+			}
+
+			buf[0] = STRING_HEADER(len);
+			for (int i = 0; i < len; i++) {
+				buf[i + 1] = id_str[i];
+			}
+		} else {
+			int len = strlen(str);
+
+			if (len > STRING_MAX_LEN) {
+				len = STRING_MAX_LEN;
+			}
+
+			buf[0] = STRING_HEADER(len);
+			for (int i = 0; i < len; i++) {
+				buf[i + 1] = str[i];
+			}
 		}
 	}
 
-	return (uint16_t *)desc;
+	return buf;
 }
 
 usbd_class_driver_t const* usbd_app_driver_get_cb(uint8_t* driver_count)

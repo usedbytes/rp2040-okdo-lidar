@@ -20,6 +20,7 @@ target_link_libraries(main
 	hardware_dma
 	hardware_pwm
 	pico_stdlib
+	pico_unique_id
 	pico_util
 	tinyusb_board
 	tinyusb_device

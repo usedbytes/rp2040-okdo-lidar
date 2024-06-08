@@ -21,48 +21,13 @@ tusb_desc_device_t const lidar_device_descriptor = {
 	.bNumConfigurations = 0x01
 };
 
-char *lidar_strings[] = {
+const char *lidar_strings[] = {
 	"usedbytes",
 	"lidar-usb",
-	"1234",
+	"SERIALNO",
 	"lidar data",
 	"reset",
 };
-
-/*
-tusb_desc_string_t lidar_strings[] = {
-	{
-		.bLength = 2 + 2,
-		.bDescriptorType = TUSB_DESC_STRING,
-		.unicode_string = { 0x409 },
-	},
-	{
-		.bLength = 2 + 9,
-		.bDescriptorType = TUSB_DESC_STRING,
-		.unicode_string = { 'u', 's', 'e', 'd', 'b', 'y', 't', 'e', 's' },
-	},
-	{
-		.bLength = 2 + 9,
-		.bDescriptorType = TUSB_DESC_STRING,
-		.unicode_string = { 'l', 'i', 'd', 'a', 'r', '-', 'u', 's', 'b' },
-	},
-	{
-		.bLength = 2 + 4,
-		.bDescriptorType = TUSB_DESC_STRING,
-		.unicode_string = { '1', '2', '3', '4', 0 },
-	},
-	{
-		.bLength = 2 + 10,
-		.bDescriptorType = TUSB_DESC_STRING,
-		.unicode_string = { 'L', 'I', 'D', 'A', 'R', ' ', 'd', 'a', 't', 'a' },
-	},
-	{
-		.bLength = 2 + 10,
-		.bDescriptorType = TUSB_DESC_STRING,
-		.unicode_string = { 'p', 'i', 'c', 'o', ' ', 'r', 'e', 's', 'e', 't' },
-	},
-};
-*/
 
 struct __attribute__((packed)) lidar_config_descriptor {
 	tusb_desc_configuration_t config;
