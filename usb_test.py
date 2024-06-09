@@ -11,7 +11,11 @@ if dev is None:
 
 dev.set_configuration()
 cfg = dev.get_active_configuration()
-intf = cfg[(0,0)]
+
+intf = usb.util.find_descriptor(
+        cfg,
+        bInterfaceClass=0xff
+        )
 
 ep_in = usb.util.find_descriptor(intf,
     # match the first IN endpoint

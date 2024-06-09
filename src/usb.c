@@ -149,7 +149,14 @@ static void lidar_usb_driver_reset(uint8_t rhport)
 
 static uint16_t lidar_usb_driver_open(uint8_t rhport, tusb_desc_interface_t const *desc_intf, uint16_t max_len)
 {
-	DBG_PRINTF("%s\n", __func__);
+	DBG_PRINTF("%s bInterfaceNumber: %d\n", __func__, desc_intf->bInterfaceNumber);
+
+	if ((desc_intf->bInterfaceClass != 0xff) ||
+	    (desc_intf->bInterfaceSubClass != 0xff) ||
+	    (desc_intf->bInterfaceProtocol != 0xff)) {
+		// Not our interface
+		return 0;
+	}
 
 	tusb_desc_endpoint_t *ep_desc = (tusb_desc_endpoint_t *)tu_desc_next(desc_intf);
 
@@ -169,8 +176,62 @@ static bool lidar_usb_driver_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb
 	return true;
 }
 
+void __write_string(char *str, int len)
+{
+	while (len) {
+		int avail = (int) tud_cdc_write_available();
+
+		int to_write = len;
+		if (to_write > avail) {
+			to_write = avail;
+		}
+
+		if (to_write) {
+			tud_cdc_write(str, to_write);
+		} else {
+			tud_cdc_write_flush();
+			tud_task();
+			continue;
+		}
+
+		len -= to_write;
+		str += to_write;
+	}
+}
+
+void __write_frame_cdc(LiDARFrameTypeDef *frame)
+{
+	char buf[32];
+	int start_angle = frame->start_angle;
+	int end_angle = frame->end_angle;
+	if (end_angle < start_angle) {
+		end_angle += 36000;
+	}
+
+	float angle_per_sample = ((end_angle - start_angle) / POINT_PER_PACK) * 0.01;
+	float angle = start_angle * 0.01;
+	for (int i = 0; i < POINT_PER_PACK; i++) {
+		int len = snprintf(buf, 32, "%3.2f, %d\r\n", angle, frame->point[i].distance);
+		if (len >= sizeof(buf)) {
+			len = sizeof(buf);
+		}
+
+		__write_string(buf, len);
+
+		angle += angle_per_sample;
+		if (angle > 360.0) {
+			angle -= 360.0;
+		}
+	}
+	tud_cdc_write_flush();
+}
+
 void usb_handle_frame(LiDARFrameTypeDef *frame)
 {
+	if (tud_cdc_connected()) {
+		__write_frame_cdc(frame);
+	}
+
 	if (ctx.state != CTX_STATE_OPENED) {
 		return;
 	}
