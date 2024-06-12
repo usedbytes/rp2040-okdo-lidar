@@ -149,11 +149,51 @@ static uint32_t lidar_hw_scan(struct lidar_hw *hw)
 	}
 }
 
+// We only support HW UARTs, so there can be at most NUM_UARTS instances
+// of the lidar.
+// We store pointers to the HW structures here, then try and find the matching
+// one in the DMA ISR
+struct lidar_hw *hw_ctxs[NUM_UARTS];
+
+static struct lidar_hw *__find_lidar_hw(uint32_t ints)
+{
+	struct lidar_hw *hw = NULL;
+
+	while (ints) {
+		int chan = __builtin_ffs(ints);
+		if (chan == 0) {
+			panic("No interrupts left! Something went wrong.");
+		}
+
+		chan = chan - 1;
+		ints &= ~(1 << chan);
+
+		for (int i = 0; i < NUM_UARTS; i++) {
+			struct lidar_hw *tmp = hw_ctxs[i];
+			if (!tmp) {
+				continue;
+			}
+
+			// TODO: Could also check the DMA pointer(s) as an
+			// extra check, but this is probably fine.
+			if (tmp->dma_chan == chan) {
+				hw = tmp;
+				break;
+			}
+		}
+	}
+
+	if (!hw) {
+		panic("Couldn't match interrupt with lidar_hw instance.");
+	}
+
+	return hw;
+}
+
 static void dma_irq_handler()
 {
-	gpio_put(PICO_DEFAULT_LED_PIN, 0);
-	gpio_put(26, 0);
-	struct lidar_hw *hw = &lidar_hw;
+	uint32_t ints = dma_hw->ints0;
+	struct lidar_hw *hw = __find_lidar_hw(ints);
 
 	hw->insert += hw->last_nbytes;
 
@@ -182,6 +222,9 @@ static void lidar_hw_init(uart_inst_t *uart, struct lidar_hw *hw, frame_cb_t fra
 	hw->dma_chan = dma_claim_unused_channel(true);
 	hw->dma_cfg = dma_channel_get_default_config(hw->dma_chan);
 	hw->dma_read_addr = (uint8_t *)&uart_hw->dr;
+
+	// Store our context so the ISR can get at it
+	hw_ctxs[uart_get_index(uart)] = hw;
 
 	channel_config_set_read_increment(&hw->dma_cfg, false);
 	channel_config_set_write_increment(&hw->dma_cfg, true);
