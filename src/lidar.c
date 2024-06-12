@@ -16,10 +16,6 @@
 #include "crc8.h"
 #include "lidar.h"
 
-#define PWM_PIN 2
-#define RX_PIN 5
-
-#define UART_ID uart1
 #define BAUD_RATE 230400
 
 void dump_frame(struct lidar_frame *frame)
@@ -50,31 +46,6 @@ static bool frame_valid(struct lidar_frame *frame)
 
 	return crc == frame->crc8;
 }
-
-// A lidar_frame is 57 bytes.
-// We need a well-aligned power-of-two buffer so we can use the DMA's ring-buffer mode.
-//
-// We process frames serially, so we only need to store one - so 64 bytes
-// should be OK.
-#define LIDAR_FRAME_SIZE sizeof(struct lidar_frame)
-#define LIDAR_HW_BUF_BITS 6
-#define LIDAR_HW_BUF_SIZE (1 << LIDAR_HW_BUF_BITS)
-static_assert(LIDAR_HW_BUF_SIZE >= LIDAR_FRAME_SIZE);
-
-struct lidar_hw {
-	uint8_t __attribute__((aligned(LIDAR_HW_BUF_SIZE))) buf[LIDAR_HW_BUF_SIZE];
-
-	uint64_t insert;
-	uint64_t extract;
-	int dma_chan;
-	dma_channel_config dma_cfg;
-	uint32_t last_nbytes;
-	uint8_t *dma_read_addr;
-	frame_cb_t frame_cb;
-	void *frame_cb_priv;
-};
-
-struct lidar_hw lidar_hw;
 
 static void lidar_hw_request_bytes(struct lidar_hw *hw, uint32_t nbytes)
 {
@@ -141,7 +112,7 @@ static uint32_t lidar_hw_scan(struct lidar_hw *hw)
 					   LIDAR_HW_BUF_SIZE, sizeof(frame));
 
 			if (frame_valid(&frame)) {
-				hw->frame_cb(hw->frame_cb_priv, &frame);
+				hw->frame_cb(hw->frame_cb_data, &frame);
 
 				p += sizeof(frame);
 				consumed += sizeof(frame);
@@ -168,7 +139,10 @@ static struct lidar_hw *__find_lidar_hw(uint32_t ints)
 	while (ints) {
 		int chan = __builtin_ffs(ints);
 		if (chan == 0) {
+#if LIDAR_EXCLUSIVE_DMA_IRQ_1
 			panic("No interrupts left! Something went wrong.");
+#endif
+			return NULL;
 		}
 
 		chan = chan - 1;
@@ -189,37 +163,39 @@ static struct lidar_hw *__find_lidar_hw(uint32_t ints)
 		}
 	}
 
-	if (!hw) {
-		panic("Couldn't match interrupt with lidar_hw instance.");
-	}
-
 	return hw;
 }
 
-static void dma_irq_handler()
+void lidar_dma_irq_handler(void)
 {
-	uint32_t ints = dma_hw->ints0;
+	uint32_t ints = dma_hw->ints1;
 	struct lidar_hw *hw = __find_lidar_hw(ints);
+	if (!hw) {
+#if LIDAR_EXCLUSIVE_DMA_IRQ_1
+		panic("Couldn't match interrupt with lidar_hw instance.");
+#endif
+		return;
+	}
 
 	hw->insert += hw->last_nbytes;
 
 	uint32_t next_req = lidar_hw_scan(hw);
 
 	// Clear the interrupt request, *before* requesting more
-	dma_hw->ints0 = 1u << hw->dma_chan;
+	dma_hw->ints1 = 1u << hw->dma_chan;
 
 	lidar_hw_request_bytes(hw, next_req);
 }
 
-static void lidar_hw_init(uart_inst_t *uart, struct lidar_hw *hw, frame_cb_t frame_cb, void *priv)
+static void lidar_hw_init(struct lidar_hw *hw, uart_inst_t *uart, frame_cb_t frame_cb, void *cb_data)
 {
 	memset(hw, 0, sizeof(*hw));
 	hw->frame_cb = frame_cb;
-	hw->frame_cb_priv = priv;
-	uart_set_fifo_enabled(uart, true);
+	hw->frame_cb_data = cb_data;
 
 	uart_hw_t *uart_hw = uart_get_hw(uart);
 	uint dreq = uart_get_dreq(uart, false);
+	uart_set_fifo_enabled(uart, true);
 
 	// Set FIFO watermark to 50% (16)
 	uart_hw->ifls = (2 << UART_UARTIFLS_RXIFLSEL_LSB);
@@ -239,40 +215,64 @@ static void lidar_hw_init(uart_inst_t *uart, struct lidar_hw *hw, frame_cb_t fra
 	channel_config_set_ring(&hw->dma_cfg, true, LIDAR_HW_BUF_BITS);
 	channel_config_set_enable(&hw->dma_cfg, true);
 
-	dma_channel_set_irq0_enabled(hw->dma_chan, true);
-	irq_set_exclusive_handler(DMA_IRQ_0, dma_irq_handler);
-	irq_set_enabled(DMA_IRQ_0, true);
+	dma_channel_set_irq1_enabled(hw->dma_chan, true);
+
+#if LIDAR_EXCLUSIVE_DMA_IRQ_1
+	irq_set_exclusive_handler(DMA_IRQ_1, lidar_dma_irq_handler);
+	irq_set_enabled(DMA_IRQ_1, true);
+#endif
 
 	// Initially request a full packet, and we will adjust when we
 	// see the first header.
 	lidar_hw_request_bytes(hw, LIDAR_FRAME_SIZE);
 }
 
-void lidar_init(frame_cb_t frame_cb, void *priv)
+static uart_inst_t *__find_uart_for_pin(uint uart_pin)
 {
-	// LD1 wants 30 kHz PWM
-	// "Scan rate around 10Hz at PWM 40%"
+	const uint32_t uart0_pins = (1 << 1) | (1 << 13) | (1 << 17) | (1 << 29);
+	const uint32_t uart1_pins = (1 << 5) | (1 << 9) | (1 << 21) | (1 << 25);
 
-	gpio_set_function(PWM_PIN, GPIO_FUNC_PWM);
+	uint32_t pin_mask = (1 << uart_pin);
 
-	const uint pwm_slice = pwm_gpio_to_slice_num(PWM_PIN);
-	const uint32_t sys_clk_rate = clock_get_hz(clk_sys);
+	if (pin_mask & uart0_pins) {
+		return uart0;
+	} else if (pin_mask & uart1_pins) {
+		return uart1;
+	}
 
-	// 30 kHz PWM, with 1000 ticks a cycle
-	const float clock_div = sys_clk_rate / (30000.0 * 1000);
+	return NULL;
+}
 
-	pwm_config cfg = pwm_get_default_config();
-	pwm_config_set_clkdiv(&cfg, clock_div);
-	pwm_config_set_wrap(&cfg, 1000);
+void lidar_init(struct lidar_hw *hw, struct lidar_cfg *cfg)
+{
+	if (cfg->pwm_pin >= 0) {
+		// LD1 wants 30 kHz PWM
+		// "Scan rate around 10Hz at PWM 40%"
+		const uint pwm_slice = pwm_gpio_to_slice_num(cfg->pwm_pin);
+		const uint32_t sys_clk_rate = clock_get_hz(clk_sys);
 
-	pwm_init(pwm_slice, &cfg, false);
-	pwm_set_chan_level(pwm_slice, PWM_CHAN_A, 400);
-	pwm_set_enabled(pwm_slice, true);
+		// 30 kHz PWM, with 1000 ticks a cycle
+		const float clock_div = sys_clk_rate / (30000.0 * 1000);
 
-	uart_init(UART_ID, BAUD_RATE);
-	gpio_set_function(RX_PIN, GPIO_FUNC_UART);
+		pwm_config pwm_cfg = pwm_get_default_config();
+		pwm_config_set_clkdiv(&pwm_cfg, clock_div);
+		pwm_config_set_wrap(&pwm_cfg, 1000);
 
-	uint baud = uart_set_baudrate(UART_ID, BAUD_RATE);
+		pwm_init(pwm_slice, &pwm_cfg, false);
+		pwm_set_chan_level(pwm_slice, PWM_CHAN_A, 400);
+		pwm_set_enabled(pwm_slice, true);
 
-	lidar_hw_init(UART_ID, &lidar_hw, frame_cb, priv);
+		gpio_set_function(cfg->pwm_pin, GPIO_FUNC_PWM);
+	}
+
+	uart_inst_t *uart = __find_uart_for_pin(cfg->uart_pin);
+	if (!uart) {
+		panic("Invalid uart_pin - couldn't match with a UART instance");
+	}
+
+	uart_init(uart, BAUD_RATE);
+	gpio_set_function(cfg->uart_pin, GPIO_FUNC_UART);
+	uart_set_baudrate(uart, BAUD_RATE);
+
+	lidar_hw_init(hw, uart, cfg->frame_cb, cfg->frame_cb_data);
 }
