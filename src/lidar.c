@@ -103,7 +103,8 @@ struct uart_buf {
 	uint32_t last_nbytes;
 	uint8_t *dma_read_addr;
 	uint8_t __attribute__((aligned(UART_BUF_SIZE))) buf[UART_BUF_SIZE];
-	queue_t *frame_queue;
+	frame_cb_t frame_cb;
+	void *frame_cb_priv;
 };
 
 struct uart_buf uart_buf;
@@ -173,9 +174,7 @@ static uint32_t uart_buf_scan(struct uart_buf *buf)
 					   UART_BUF_SIZE, sizeof(frame));
 
 			if (frame_valid(&frame)) {
-				if (!queue_try_add(buf->frame_queue, &frame)) {
-					printf("Frame dropped! Handle frames more quickly.");
-				}
+				buf->frame_cb(buf->frame_cb_priv, &frame);
 
 				p += sizeof(frame);
 				consumed += sizeof(frame);
@@ -205,10 +204,11 @@ static void dma_irq_handler()
 	uart_buf_request_bytes(buf, next_req);
 }
 
-static void uart_buf_init(uart_inst_t *uart, struct uart_buf *buf, queue_t *frame_queue)
+static void uart_buf_init(uart_inst_t *uart, struct uart_buf *buf, frame_cb_t frame_cb, void *priv)
 {
 	memset(buf, 0, sizeof(*buf));
-	buf->frame_queue = frame_queue;
+	buf->frame_cb = frame_cb;
+	buf->frame_cb_priv = priv;
 	uart_set_fifo_enabled(uart, true);
 
 	uart_hw_t *uart_hw = uart_get_hw(uart);
@@ -238,7 +238,7 @@ static void uart_buf_init(uart_inst_t *uart, struct uart_buf *buf, queue_t *fram
 	uart_buf_request_bytes(buf, FRAME_SIZE);
 }
 
-void lidar_init(queue_t *frame_queue)
+void lidar_init(frame_cb_t frame_cb, void *priv)
 {
 	// LD1 wants 30 kHz PWM
 	// "Scan rate around 10Hz at PWM 40%"
@@ -264,5 +264,5 @@ void lidar_init(queue_t *frame_queue)
 
 	uint baud = uart_set_baudrate(UART_ID, BAUD_RATE);
 
-	uart_buf_init(UART_ID, &uart_buf, frame_queue);
+	uart_buf_init(UART_ID, &uart_buf, frame_cb, priv);
 }

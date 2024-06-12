@@ -7,6 +7,15 @@
 #include "lidar.h"
 #include "usb.h"
 
+void frame_cb(void *priv, LiDARFrameTypeDef *frame)
+{
+	queue_t *queue = (queue_t *)priv;
+
+	if (!queue_try_add(queue, frame)) {
+		printf("Frame dropped! Handle frames more quickly.");
+	}
+}
+
 void main(void) {
 	stdio_init_all();
 
@@ -17,7 +26,7 @@ void main(void) {
 	queue_init(&frame_queue, sizeof(LiDARFrameTypeDef), 8);
 
 	usb_init();
-	lidar_init(&frame_queue);
+	lidar_init(frame_cb, &frame_queue);
 
 	int i = 0;
 

@@ -24,7 +24,9 @@ typedef struct __attribute__((packed)) {
 
 // End thirdparty
 
-void lidar_init(queue_t *frame_queue);
+typedef void (*frame_cb_t)(void *priv, LiDARFrameTypeDef *frame);
+
+void lidar_init(frame_cb_t frame_cb, void *priv);
 
 void dump_frame(LiDARFrameTypeDef *frame);
 
