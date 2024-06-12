@@ -129,7 +129,7 @@ static void lidar_usb_driver_init(void)
 
 	// At worst, we should only need to buffer 2 frames
 	// for the interrupt endpoint
-	queue_init(&ctx.tx_queue, sizeof(LiDARFrameTypeDef), 2);
+	queue_init(&ctx.tx_queue, sizeof(struct lidar_frame), 2);
 
 	ctx.state = CTX_STATE_CLOSED;
 }
@@ -141,7 +141,7 @@ static void lidar_usb_driver_reset(uint8_t rhport)
 	ctx.state = CTX_STATE_CLOSED;
 	ctx.overflowed = false;
 
-	LiDARFrameTypeDef frame;
+	struct lidar_frame frame;
 
 	// Clear the queue
 	while (queue_try_remove(&ctx.tx_queue, &frame));
@@ -199,7 +199,7 @@ void __write_string(char *str, int len)
 	}
 }
 
-void __write_frame_cdc(LiDARFrameTypeDef *frame)
+void __write_frame_cdc(struct lidar_frame *frame)
 {
 	char buf[32];
 	int start_angle = frame->start_angle;
@@ -208,10 +208,10 @@ void __write_frame_cdc(LiDARFrameTypeDef *frame)
 		end_angle += 36000;
 	}
 
-	float angle_per_sample = ((end_angle - start_angle) / POINT_PER_PACK) * 0.01;
+	float angle_per_sample = ((end_angle - start_angle) / LIDAR_SAMPLES_PER_FRAME) * 0.01;
 	float angle = start_angle * 0.01;
-	for (int i = 0; i < POINT_PER_PACK; i++) {
-		int len = snprintf(buf, 32, "%3.2f, %d\r\n", angle, frame->point[i].distance);
+	for (int i = 0; i < LIDAR_SAMPLES_PER_FRAME; i++) {
+		int len = snprintf(buf, 32, "%3.2f, %d\r\n", angle, frame->samples[i].distance_mm);
 		if (len >= sizeof(buf)) {
 			len = sizeof(buf);
 		}
@@ -226,7 +226,7 @@ void __write_frame_cdc(LiDARFrameTypeDef *frame)
 	tud_cdc_write_flush();
 }
 
-void usb_handle_frame(LiDARFrameTypeDef *frame)
+void usb_handle_frame(struct lidar_frame *frame)
 {
 	if (tud_cdc_connected()) {
 		__write_frame_cdc(frame);
@@ -256,7 +256,7 @@ static bool lidar_usb_driver_xfer_cb(uint8_t rhport, uint8_t ep_addr, xfer_resul
 	DBG_PRINTF("%s %d\n", __func__, xferred_bytes);
 
 	if (ep_addr == ctx.ep_in) {
-		LiDARFrameTypeDef frame;
+		struct lidar_frame frame;
 		if (queue_try_remove(&ctx.tx_queue, &frame)) {
 			usbd_edpt_xfer(ctx.rhport, ctx.ep_in, (uint8_t *)&frame, sizeof(frame));
 		} else {

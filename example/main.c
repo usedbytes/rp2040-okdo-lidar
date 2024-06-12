@@ -7,7 +7,7 @@
 #include "lidar.h"
 #include "usb.h"
 
-void frame_cb(void *priv, LiDARFrameTypeDef *frame)
+void frame_cb(void *priv, struct lidar_frame *frame)
 {
 	queue_t *queue = (queue_t *)priv;
 
@@ -23,7 +23,7 @@ void main(void) {
 	gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
 
 	queue_t frame_queue;
-	queue_init(&frame_queue, sizeof(LiDARFrameTypeDef), 8);
+	queue_init(&frame_queue, sizeof(struct lidar_frame), 8);
 
 	usb_init();
 	lidar_init(frame_cb, &frame_queue);
@@ -31,7 +31,7 @@ void main(void) {
 	int i = 0;
 
 	for ( ;; ) {
-		LiDARFrameTypeDef frame;
+		struct lidar_frame frame;
 		gpio_put(PICO_DEFAULT_LED_PIN, 0);
 		if (queue_try_remove(&frame_queue, &frame)) {
 			gpio_put(PICO_DEFAULT_LED_PIN, 1);
