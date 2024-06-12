@@ -53,28 +53,29 @@ static bool frame_valid(struct lidar_frame *frame)
 
 #define FRAME_SIZE sizeof(struct lidar_frame)
 
-struct uart_buf {
-#define UART_BUF_BITS 7
-#define UART_BUF_SIZE (1 << UART_BUF_BITS)
+struct lidar_hw {
+#define LIDAR_HW_BUF_BITS 7
+#define LIDAR_HW_BUF_SIZE (1 << LIDAR_HW_BUF_BITS)
+	uint8_t __attribute__((aligned(LIDAR_HW_BUF_SIZE))) buf[LIDAR_HW_BUF_SIZE];
+
 	uint64_t insert;
 	uint64_t extract;
 	int dma_chan;
 	dma_channel_config dma_cfg;
 	uint32_t last_nbytes;
 	uint8_t *dma_read_addr;
-	uint8_t __attribute__((aligned(UART_BUF_SIZE))) buf[UART_BUF_SIZE];
 	frame_cb_t frame_cb;
 	void *frame_cb_priv;
 };
 
-struct uart_buf uart_buf;
+struct lidar_hw lidar_hw;
 
-static void uart_buf_request_bytes(struct uart_buf *buf, uint32_t nbytes)
+static void lidar_hw_request_bytes(struct lidar_hw *hw, uint32_t nbytes)
 {
-	uint8_t *dst = &buf->buf[buf->insert % UART_BUF_SIZE];
-	buf->last_nbytes = nbytes;
-	dma_channel_configure(buf->dma_chan, &buf->dma_cfg,
-	                      dst, buf->dma_read_addr,
+	uint8_t *dst = &hw->buf[hw->insert % LIDAR_HW_BUF_SIZE];
+	hw->last_nbytes = nbytes;
+	dma_channel_configure(hw->dma_chan, &hw->dma_cfg,
+	                      dst, hw->dma_read_addr,
 	                      nbytes, true);
 }
 
@@ -96,18 +97,18 @@ static void ring_buffer_memcpy(uint8_t *dst, uint8_t *src_base,
 	}
 }
 
-static uint32_t uart_buf_scan(struct uart_buf *buf)
+static uint32_t lidar_hw_scan(struct lidar_hw *hw)
 {
 	for (;;) {
-		const uint32_t start_offset = buf->extract % UART_BUF_SIZE;
-		const uint32_t available = buf->insert - buf->extract;
-		const uint32_t before_wrap = min_u32(available, UART_BUF_SIZE - start_offset);
+		const uint32_t start_offset = hw->extract % LIDAR_HW_BUF_SIZE;
+		const uint32_t available = hw->insert - hw->extract;
+		const uint32_t before_wrap = min_u32(available, LIDAR_HW_BUF_SIZE - start_offset);
 
 		if (available == 0) {
 			return FRAME_SIZE;
 		}
 
-		uint8_t *p = &buf->buf[start_offset];
+		uint8_t *p = &hw->buf[start_offset];
 		const uint8_t *end = p + before_wrap;
 		uint32_t consumed = 0;
 
@@ -123,18 +124,18 @@ static uint32_t uart_buf_scan(struct uart_buf *buf)
 			if (remainder < FRAME_SIZE) {
 				// Not enough data to copy a full packet
 				// Request more.
-				buf->extract += consumed;
+				hw->extract += consumed;
 				return FRAME_SIZE - remainder;
 			}
 
 			// Full packet available
 			struct lidar_frame frame;
 
-			ring_buffer_memcpy((uint8_t *)&frame, buf->buf, p - buf->buf,
-					   UART_BUF_SIZE, sizeof(frame));
+			ring_buffer_memcpy((uint8_t *)&frame, hw->buf, p - hw->buf,
+					   LIDAR_HW_BUF_SIZE, sizeof(frame));
 
 			if (frame_valid(&frame)) {
-				buf->frame_cb(buf->frame_cb_priv, &frame);
+				hw->frame_cb(hw->frame_cb_priv, &frame);
 
 				p += sizeof(frame);
 				consumed += sizeof(frame);
@@ -144,7 +145,7 @@ static uint32_t uart_buf_scan(struct uart_buf *buf)
 			}
 		}
 
-		buf->extract += consumed;
+		hw->extract += consumed;
 	}
 }
 
@@ -152,23 +153,23 @@ static void dma_irq_handler()
 {
 	gpio_put(PICO_DEFAULT_LED_PIN, 0);
 	gpio_put(26, 0);
-	struct uart_buf *buf = &uart_buf;
+	struct lidar_hw *hw = &lidar_hw;
 
-	buf->insert += buf->last_nbytes;
+	hw->insert += hw->last_nbytes;
 
-	uint32_t next_req = uart_buf_scan(buf);
+	uint32_t next_req = lidar_hw_scan(hw);
 
 	// Clear the interrupt request, *before* requesting more
-	dma_hw->ints0 = 1u << buf->dma_chan;
+	dma_hw->ints0 = 1u << hw->dma_chan;
 
-	uart_buf_request_bytes(buf, next_req);
+	lidar_hw_request_bytes(hw, next_req);
 }
 
-static void uart_buf_init(uart_inst_t *uart, struct uart_buf *buf, frame_cb_t frame_cb, void *priv)
+static void lidar_hw_init(uart_inst_t *uart, struct lidar_hw *hw, frame_cb_t frame_cb, void *priv)
 {
-	memset(buf, 0, sizeof(*buf));
-	buf->frame_cb = frame_cb;
-	buf->frame_cb_priv = priv;
+	memset(hw, 0, sizeof(*hw));
+	hw->frame_cb = frame_cb;
+	hw->frame_cb_priv = priv;
 	uart_set_fifo_enabled(uart, true);
 
 	uart_hw_t *uart_hw = uart_get_hw(uart);
@@ -178,24 +179,24 @@ static void uart_buf_init(uart_inst_t *uart, struct uart_buf *buf, frame_cb_t fr
 	uart_hw->ifls = (2 << UART_UARTIFLS_RXIFLSEL_LSB);
 
 	// Set up DMA to transfer from UART to ring-buffer
-	buf->dma_chan = dma_claim_unused_channel(true);
-	buf->dma_cfg = dma_channel_get_default_config(buf->dma_chan);
-	buf->dma_read_addr = (uint8_t *)&uart_hw->dr;
+	hw->dma_chan = dma_claim_unused_channel(true);
+	hw->dma_cfg = dma_channel_get_default_config(hw->dma_chan);
+	hw->dma_read_addr = (uint8_t *)&uart_hw->dr;
 
-	channel_config_set_read_increment(&buf->dma_cfg, false);
-	channel_config_set_write_increment(&buf->dma_cfg, true);
-	channel_config_set_dreq(&buf->dma_cfg, dreq);
-	channel_config_set_transfer_data_size(&buf->dma_cfg, DMA_SIZE_8);
-	channel_config_set_ring(&buf->dma_cfg, true, UART_BUF_BITS);
-	channel_config_set_enable(&buf->dma_cfg, true);
+	channel_config_set_read_increment(&hw->dma_cfg, false);
+	channel_config_set_write_increment(&hw->dma_cfg, true);
+	channel_config_set_dreq(&hw->dma_cfg, dreq);
+	channel_config_set_transfer_data_size(&hw->dma_cfg, DMA_SIZE_8);
+	channel_config_set_ring(&hw->dma_cfg, true, LIDAR_HW_BUF_BITS);
+	channel_config_set_enable(&hw->dma_cfg, true);
 
-	dma_channel_set_irq0_enabled(buf->dma_chan, true);
+	dma_channel_set_irq0_enabled(hw->dma_chan, true);
 	irq_set_exclusive_handler(DMA_IRQ_0, dma_irq_handler);
 	irq_set_enabled(DMA_IRQ_0, true);
 
 	// Initially request a full packet, and we will adjust when we
 	// see the first header.
-	uart_buf_request_bytes(buf, FRAME_SIZE);
+	lidar_hw_request_bytes(hw, FRAME_SIZE);
 }
 
 void lidar_init(frame_cb_t frame_cb, void *priv)
@@ -224,5 +225,5 @@ void lidar_init(frame_cb_t frame_cb, void *priv)
 
 	uint baud = uart_set_baudrate(UART_ID, BAUD_RATE);
 
-	uart_buf_init(UART_ID, &uart_buf, frame_cb, priv);
+	lidar_hw_init(UART_ID, &lidar_hw, frame_cb, priv);
 }
