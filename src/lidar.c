@@ -51,11 +51,17 @@ static bool frame_valid(struct lidar_frame *frame)
 	return crc == frame->crc8;
 }
 
-#define FRAME_SIZE sizeof(struct lidar_frame)
+// A lidar_frame is 57 bytes.
+// We need a well-aligned power-of-two buffer so we can use the DMA's ring-buffer mode.
+//
+// We process frames serially, so we only need to store one - so 64 bytes
+// should be OK.
+#define LIDAR_FRAME_SIZE sizeof(struct lidar_frame)
+#define LIDAR_HW_BUF_BITS 6
+#define LIDAR_HW_BUF_SIZE (1 << LIDAR_HW_BUF_BITS)
+static_assert(LIDAR_HW_BUF_SIZE >= LIDAR_FRAME_SIZE);
 
 struct lidar_hw {
-#define LIDAR_HW_BUF_BITS 7
-#define LIDAR_HW_BUF_SIZE (1 << LIDAR_HW_BUF_BITS)
 	uint8_t __attribute__((aligned(LIDAR_HW_BUF_SIZE))) buf[LIDAR_HW_BUF_SIZE];
 
 	uint64_t insert;
@@ -105,7 +111,7 @@ static uint32_t lidar_hw_scan(struct lidar_hw *hw)
 		const uint32_t before_wrap = min_u32(available, LIDAR_HW_BUF_SIZE - start_offset);
 
 		if (available == 0) {
-			return FRAME_SIZE;
+			return LIDAR_FRAME_SIZE;
 		}
 
 		uint8_t *p = &hw->buf[start_offset];
@@ -121,11 +127,11 @@ static uint32_t lidar_hw_scan(struct lidar_hw *hw)
 			}
 
 			uint32_t remainder = available - consumed;
-			if (remainder < FRAME_SIZE) {
+			if (remainder < LIDAR_FRAME_SIZE) {
 				// Not enough data to copy a full packet
 				// Request more.
 				hw->extract += consumed;
-				return FRAME_SIZE - remainder;
+				return LIDAR_FRAME_SIZE - remainder;
 			}
 
 			// Full packet available
@@ -239,7 +245,7 @@ static void lidar_hw_init(uart_inst_t *uart, struct lidar_hw *hw, frame_cb_t fra
 
 	// Initially request a full packet, and we will adjust when we
 	// see the first header.
-	lidar_hw_request_bytes(hw, FRAME_SIZE);
+	lidar_hw_request_bytes(hw, LIDAR_FRAME_SIZE);
 }
 
 void lidar_init(frame_cb_t frame_cb, void *priv)
