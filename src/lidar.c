@@ -259,7 +259,9 @@ void lidar_init(struct lidar_hw *hw, struct lidar_cfg *cfg)
 		pwm_config_set_wrap(&pwm_cfg, 1000);
 
 		pwm_init(pwm_slice, &pwm_cfg, false);
-		pwm_set_chan_level(pwm_slice, PWM_CHAN_A, 400);
+
+		const uint pwm_chan = cfg->pwm_pin & 1 ? PWM_CHAN_B : PWM_CHAN_A;
+		pwm_set_chan_level(pwm_slice, pwm_chan, 400);
 		pwm_set_enabled(pwm_slice, true);
 
 		gpio_set_function(cfg->pwm_pin, GPIO_FUNC_PWM);
